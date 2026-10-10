@@ -32,6 +32,21 @@ import { Prisma } from '@prisma/client';
 const app = express();
 const isProd = process.env.NODE_ENV === 'production';
 
+const normalizeOrigin = (value) => {
+  if (!value?.trim()) return null;
+  try {
+    return new URL(value.trim()).origin;
+  } catch {
+    return null;
+  }
+};
+
+const allowedFrontendOrigins = new Set(
+  [process.env.FRONTEND_URL, ...(process.env.FRONTEND_URLS || '').split(',')]
+    .map(normalizeOrigin)
+    .filter(Boolean)
+);
+
 if (isProd) app.set('trust proxy', 1);
 
 const supabaseUrl = process.env.SUPABASE_URL || '';
@@ -52,9 +67,8 @@ app.use(helmet({
 }));
 app.use(cors({
   origin: (origin, callback) => {
-    const allowed = process.env.FRONTEND_URL;
-    if (!origin || (allowed && origin === allowed)) callback(null, true);
-    else if (!allowed && !isProd) callback(null, true);
+    if (!origin || allowedFrontendOrigins.has(normalizeOrigin(origin))) callback(null, true);
+    else if (!allowedFrontendOrigins.size && !isProd) callback(null, true);
     else callback(new Error('Not allowed by CORS'));
   },
   credentials: true,

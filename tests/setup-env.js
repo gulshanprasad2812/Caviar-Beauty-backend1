@@ -1,0 +1,13 @@
+process.env.NODE_ENV = 'test';
+process.env.DATABASE_URL = 'postgresql://caviar:caviar_password@localhost:5432/caviar_beauty_test?schema=public';
+process.env.DIRECT_URL = process.env.DATABASE_URL;
+process.env.JWT_SECRET = 'test-jwt-secret-please-change-this-value-0000';
+process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-please-change-this-0000';
+process.env.SMTP_HOST = 'localhost';
+process.env.SMTP_PORT = '25';
+process.env.SMTP_USER = '';
+process.env.SMTP_PASS = '';
+process.env.FRONTEND_URL = 'http://localhost:5173';
+process.env.RAZORPAY_KEY_ID = '';
+process.env.RAZORPAY_KEY_SECRET = '';
+process.env.RAZORPAY_WEBHOOK_SECRET = '';

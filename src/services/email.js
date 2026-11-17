@@ -1,94 +1,157 @@
 import nodemailer from 'nodemailer';
 import { forgotPasswordTemplate, verifyEmailTemplate, welcomeTemplate, orderConfirmationTemplate, orderShippedTemplate, orderDeliveredTemplate, refundTemplate } from '../templates/email.js';
+import { maskEmail } from '../utils/otp.js';
 
 let transporter = null;
-const isPlaceholder = (v) => !v || v === 'your-email@gmail.com' || v === 'your-password' || v === 'smtp.gmail.com';
+
+// Values shipped in .env.example that must not be treated as real credentials.
+// NOTE: 'smtp.gmail.com' used to be listed here, which meant the documented
+// default host could never produce a transport - every email (including email
+// verification OTPs) was mock-logged even with valid SMTP_USER / SMTP_PASS.
+const PLACEHOLDER_VALUES = new Set([
+  'your-email@gmail.com',
+  'your-password',
+  'your-app-password',
+  'your-email@example.com',
+]);
+
+const isPlaceholder = (value) => !value || PLACEHOLDER_VALUES.has(String(value).trim());
+
+export const getEmailConfig = () => {
+  const host = (process.env.SMTP_HOST || '').trim();
+  const user = (process.env.SMTP_USER || '').trim();
+  const pass = (process.env.SMTP_PASS || '').trim();
+  const from = (process.env.MAIL_FROM || '').trim() || user;
+  const missing = [];
+  if (isPlaceholder(host)) missing.push('SMTP_HOST');
+  if (isPlaceholder(user)) missing.push('SMTP_USER');
+  if (isPlaceholder(pass)) missing.push('SMTP_PASS');
+  return {
+    provider: 'smtp',
+    configured: missing.length === 0,
+    host,
+    port: parseInt(process.env.SMTP_PORT || '587', 10),
+    secure: (process.env.SMTP_PORT || '587') === '465',
+    user,
+    from,
+    missing,
+  };
+};
 
 function getTransport() {
   if (transporter) return transporter;
-  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS
-    && !isPlaceholder(process.env.SMTP_HOST) && !isPlaceholder(process.env.SMTP_USER) && !isPlaceholder(process.env.SMTP_PASS)) {
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT || '587'),
-      secure: process.env.SMTP_PORT === '465',
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    });
-  }
+  const config = getEmailConfig();
+  if (!config.configured) return null;
+  transporter = nodemailer.createTransport({
+    host: config.host,
+    port: config.port,
+    secure: config.secure,
+    auth: { user: config.user, pass: (process.env.SMTP_PASS || '').trim() },
+  });
   return transporter;
 }
 
 const isEmailConfigured = () => !!getTransport();
 
-// Simple in-memory retry queue with exponential backoff.
+const fromAddress = () => {
+  const config = getEmailConfig();
+  return `"Caviar Beauty" <${config.from || 'no-reply@caviarbeauty.com'}>`;
+};
+
+// Background retry queue with exponential backoff. A send is attempted once
+// synchronously (so the caller can report success/failure immediately); failed
+// sends are then retried in the background without blocking the HTTP response.
 const MAX_RETRIES = 4;
 const RETRY_BASE_MS = 5000;
-const queue = new Map(); // key -> { attempts, mail, resolve }
 
-function scheduleRetry(key, mail, attempts, resolve, reject) {
-  const delay = RETRY_BASE_MS * 2 ** (attempts - 1);
-  const timer = setTimeout(async () => {
-    try {
-      await getTransport().sendMail(mail);
-      resolve();
-    } catch (err) {
-      if (attempts >= MAX_RETRIES) {
-        reject(err);
-        console.error(`[EMAIL] Giving up after ${MAX_RETRIES} attempts: ${mail.to} (${err.message})`);
-      } else {
-        console.warn(`[EMAIL] Retry ${attempts}/${MAX_RETRIES} for ${mail.to}: ${err.message}`);
-        scheduleRetry(key, mail, attempts + 1, resolve, reject);
-      }
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function retryInBackground(mail, attempt) {
+  try {
+    await sleep(RETRY_BASE_MS * 2 ** (attempt - 1));
+    const transport = getTransport();
+    if (!transport) return;
+    await transport.sendMail(mail);
+    console.log(`[EMAIL] Retry ${attempt} succeeded for ${maskEmail(mail.to)}`);
+  } catch (err) {
+    if (attempt >= MAX_RETRIES) {
+      console.error(`[EMAIL] Giving up after ${MAX_RETRIES} attempts for ${maskEmail(mail.to)}: ${err.message}`);
+    } else {
+      console.warn(`[EMAIL] Retry ${attempt}/${MAX_RETRIES} for ${maskEmail(mail.to)}: ${err.message}`);
+      retryInBackground(mail, attempt + 1).catch(() => {});
     }
-  }, delay);
-  queue.set(key, timer);
+  }
 }
 
+/**
+ * Sends a message. Resolves with a delivery result instead of throwing, so a
+ * failed OTP email is reported to the user rather than swallowed silently.
+ */
 async function sendMail(mail) {
-  const t = getTransport();
-  if (!t) {
-    const codeMatch = mail.html && mail.html.match(/>\s*(\d{6})\s*</);
-    console.log(`[EMAIL MOCK] To: ${mail.to} | Subject: ${mail.subject}${codeMatch ? ` | OTP: ${codeMatch[1]}` : ''}`);
-    return;
+  const transport = getTransport();
+  if (!transport) {
+    if (process.env.NODE_ENV !== 'production') {
+      const codeMatch = mail.html && mail.html.match(/<span>\s*(\d{6})\s*<\/span>/);
+      console.log(`[EMAIL MOCK] To: ${maskEmail(mail.to)} | Subject: ${mail.subject}${codeMatch ? ` | OTP: ${codeMatch[1]}` : ''}`);
+    } else {
+      console.warn(`[EMAIL] Not configured (missing ${getEmailConfig().missing.join(', ')}); message to ${maskEmail(mail.to)} was NOT sent.`);
+    }
+    return { delivered: false, mocked: true, provider: 'mock', reason: 'not-configured' };
   }
-  const key = `${mail.to}:${mail.subject}:${Date.now()}`;
+
   try {
-    await t.sendMail(mail);
+    const info = await transport.sendMail(mail);
+    return { delivered: true, mocked: false, provider: 'smtp', messageId: info?.messageId || null };
   } catch (err) {
-    console.warn(`[EMAIL] Initial send failed for ${mail.to}: ${err.message}`);
-    await new Promise((resolve, reject) => scheduleRetry(key, mail, 1, resolve, reject));
-  } finally {
-    const timer = queue.get(key);
-    if (timer) { clearTimeout(timer); queue.delete(key); }
+    console.error(`[EMAIL] Initial send failed for ${maskEmail(mail.to)}: ${err.message}`);
+    retryInBackground(mail, 1).catch(() => {});
+    return { delivered: false, mocked: false, provider: 'smtp', error: err.message };
   }
 }
 
 export function sendForgotPasswordOTP(email, otp, firstName) {
-  return sendMail({ from: `"Caviar Beauty" <${process.env.SMTP_USER}>`, to: email, subject: 'Reset your Caviar Beauty password', html: forgotPasswordTemplate(otp, firstName) });
+  return sendMail({ from: fromAddress(), to: email, subject: 'Reset your Caviar Beauty password', html: forgotPasswordTemplate(otp, firstName) });
 }
 
 export function sendVerificationOTP(email, otp, firstName) {
-  return sendMail({ from: `"Caviar Beauty" <${process.env.SMTP_USER}>`, to: email, subject: 'Verify your Caviar Beauty email', html: verifyEmailTemplate(otp, firstName) });
+  return sendMail({ from: fromAddress(), to: email, subject: 'Verify your Caviar Beauty email', html: verifyEmailTemplate(otp, firstName) });
 }
 
 export function sendWelcomeEmail(email, firstName) {
-  return sendMail({ from: `"Caviar Beauty" <${process.env.SMTP_USER}>`, to: email, subject: 'Welcome to Caviar Beauty', html: welcomeTemplate(firstName) });
+  return sendMail({ from: fromAddress(), to: email, subject: 'Welcome to Caviar Beauty', html: welcomeTemplate(firstName) });
 }
 
 export function sendOrderConfirmationEmail(email, firstName, order) {
-  return sendMail({ from: `"Caviar Beauty" <${process.env.SMTP_USER}>`, to: email, subject: `Order ${order.orderNumber} confirmed`, html: orderConfirmationTemplate(order, firstName) });
+  return sendMail({ from: fromAddress(), to: email, subject: `Order ${order.orderNumber} confirmed`, html: orderConfirmationTemplate(order, firstName) });
 }
 
 export function sendOrderShippedEmail(email, firstName, order, shipment) {
-  return sendMail({ from: `"Caviar Beauty" <${process.env.SMTP_USER}>`, to: email, subject: `Order ${order.orderNumber} shipped`, html: orderShippedTemplate(order, firstName, shipment) });
+  return sendMail({ from: fromAddress(), to: email, subject: `Order ${order.orderNumber} shipped`, html: orderShippedTemplate(order, firstName, shipment) });
 }
 
 export function sendOrderDeliveredEmail(email, firstName, order) {
-  return sendMail({ from: `"Caviar Beauty" <${process.env.SMTP_USER}>`, to: email, subject: `Order ${order.orderNumber} delivered`, html: orderDeliveredTemplate(order, firstName) });
+  return sendMail({ from: fromAddress(), to: email, subject: `Order ${order.orderNumber} delivered`, html: orderDeliveredTemplate(order, firstName) });
 }
 
 export function sendRefundEmail(email, firstName, order, refund) {
-  return sendMail({ from: `"Caviar Beauty" <${process.env.SMTP_USER}>`, to: email, subject: `Refund issued for ${order.orderNumber}`, html: refundTemplate(order, refund, firstName) });
+  return sendMail({ from: fromAddress(), to: email, subject: `Refund issued for ${order.orderNumber}`, html: refundTemplate(order, refund, firstName) });
 }
 
-export { isEmailConfigured };
+/**
+ * Boot-time report, mirroring reportPaymentConfig(). Email is optional for the
+ * API to start, but registration, email verification and password reset all
+ * depend on it, so the state is logged loudly.
+ */
+export function reportEmailConfig() {
+  const { configured, missing, host, port } = getEmailConfig();
+  if (configured) {
+    console.log(`[EMAIL] SMTP configured (${host}:${port}) - verification and reset emails will be delivered.`);
+    return { configured: true, missing: [] };
+  }
+  console.warn(`[EMAIL] Email delivery is NOT configured. Missing or placeholder: ${missing.join(', ')}.
+[EMAIL] Email verification and password-reset codes cannot be delivered; in development they are printed to this log.
+[EMAIL] See EMAIL_OTP_SETUP.md for setup (Gmail needs an App Password, not your normal password).`);
+  return { configured: false, missing };
+}
+
+export { isEmailConfigured, sendMail };

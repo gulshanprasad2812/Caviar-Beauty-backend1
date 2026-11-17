@@ -23,6 +23,11 @@ model User {
   mustChangePassword Boolean @default(false)
   otp           String?
   otpExpiry     DateTime?
+  otpAttempts   Int       @default(0)
+  phoneOtp          String?
+  phoneOtpExpiry    DateTime?
+  phoneOtpAttempts  Int       @default(0)
+  phoneVerified     Boolean   @default(false)
   refreshToken  String?
   resetToken    String?
   resetTokenExp DateTime?
@@ -385,7 +390,8 @@ model Refund {
   currency        String    @default("INR")
   status          String    @default("PENDING")
   reason          String?
-  razorpayRefundId String?
+  paytmRefundId   String?
+  paytmRefId      String?
   gatewayResponse String?
   initiatedBy     String?
   createdAt       DateTime  @default(now())
@@ -452,4 +458,45 @@ model Log {
   metadata  String?
   ip        String?
   createdAt DateTime @default(now())
+}
+
+/// Editable storefront copy. `sections` holds the article body and `data` holds
+/// layout-specific extras (for example the About page story and values).
+model ContentPage {
+  id          String   @id @default(uuid())
+  slug        String   @unique
+  title       String
+  subtitle    String?
+  seoTitle    String?
+  seoDesc     String?
+  layout      String   @default("article")
+  sections    Json?
+  data        Json?
+  isPublished Boolean  @default(true)
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// Single-row configuration for the storefront: identity, contact details,
+/// social links, footer copy, announcement bar and home hero slides.
+model SiteSetting {
+  id                  String   @id @default("default")
+  brandName           String   @default("Caviar Beauty")
+  tagline             String?
+  supportEmail        String?
+  supportPhone        String?
+  whatsapp            String?
+  address             String?
+  hours               String?
+  instagramUrl        String?
+  twitterUrl          String?
+  linkedinUrl         String?
+  youtubeUrl          String?
+  footerBlurb         String?
+  announcement        String?
+  announcementEnabled Boolean  @default(false)
+  heroSlides          Json?
+  updatedBy           String?
+  updatedAt           DateTime @updatedAt
 }

@@ -1,6 +1,11 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
+import { generateOTP } from './otp.js';
+
+// Re-exported for backwards compatibility; the implementation lives in otp.js
+// so email and SMS codes share one secure generator.
+export { generateOTP };
 
 export const generateToken = (userId, email, role) => {
   return jwt.sign({ id: userId, email, role }, process.env.JWT_SECRET, { expiresIn: '7d' });
@@ -24,8 +29,6 @@ export const generateOrderNumber = () => {
   const random = uuidv4().slice(0, 4).toUpperCase();
   return `${prefix}-${timestamp}-${random}`;
 };
-
-export const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 export const slugify = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 

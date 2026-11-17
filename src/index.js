@@ -1,12 +1,19 @@
-import dotenv from 'dotenv';
-import { assertSecureConfig } from './utils/security.js';
+// dotenv MUST be the first import: ES modules evaluate their dependencies
+// before the importing module body runs, so reading process.env at module scope
+// in app.js / paytm.js only works if the environment is loaded here first.
+import 'dotenv/config';
+
+import { assertSecureConfig, reportPaymentConfig } from './utils/security.js';
+import { reportEmailConfig } from './services/email.js';
+import { reportSmsConfig } from './services/sms.js';
 import { prisma } from './db.js';
 import app from './app.js';
 import { startAutoCancelJob, stopAutoCancelJob } from './jobs/autoCancelOrders.js';
 
-dotenv.config();
-
 assertSecureConfig();
+reportPaymentConfig();
+reportEmailConfig();
+reportSmsConfig();
 
 const PORT = process.env.PORT || 4000;
 

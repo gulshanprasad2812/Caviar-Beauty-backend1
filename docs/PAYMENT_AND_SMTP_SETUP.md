@@ -1,81 +1,86 @@
-# Payment Gateway (Razorpay) & SMTP Setup Guide
+# Payment Gateway (Paytm) & SMTP Setup Guide
 
-Step-by-step setup procedures for going live with Razorpay payments and transactional
+Step-by-step setup procedures for going live with Paytm payments and transactional
 emails (SMTP) in the Caviar Beauty store.
 
 Applies to: backend (Express/Prisma on port 4000), frontend (Vite/React).
 
 ---
 
-## 1. Razorpay (Payments)
+## 1. Paytm (Payments)
 
 ### How it works in the code
 | Piece | Location |
 |---|---|
-| Razorpay client + config gates | `src/utils/razorpay.js` |
-| Order creation / verify / refund / webhooks | `src/controllers/payments.js` |
+| Paytm client, checksums, Transaction Status/Refund APIs | `src/utils/paytm.js` |
+| Create token / verify / refund / callback / webhook | `src/controllers/payments.js` |
 | Routes | `src/routes/payments.js` |
 
 Checkout flow:
 1. Frontend creates the order, then calls `POST /api/payments/create-order`.
-2. Backend creates a Razorpay order; **if keys are placeholders it returns `503 "Payment gateway is not configured"`** (`payments.js:13`).
-3. Frontend opens the Razorpay checkout modal (key = `keyId` returned by the API, `order_id` = Razorpay order id).
-4. On success the frontend posts `razorpay_order_id`, `razorpay_payment_id`, `razorpay_signature` to `POST /api/payments/verify`.
-5. Backend HMAC-verifies the signature (`razorpay.js:11`) → marks payment `COMPLETED`, order `CONFIRMED`, fulfils stock.
-6. Refunds go through `createRefund` (`razorpay.js:24`) and are updated by webhook events.
+2. Backend calls Paytm **Initiate Transaction** with our `Order.orderNumber` as `orderId` and returns the one-time `txnToken`; **if the MID/key are missing or placeholders it returns `503 "Payment gateway is not configured"`**.
+3. Frontend loads `{HOST}/merchantpgpui/checkoutjs/merchants/{MID}.js`, initialises Paytm JS Checkout with `{ orderId, token: txnToken, tokenType: 'TXN_TOKEN' }` and invokes it.
+4. After the customer pays, the browser reports the result and the frontend calls `POST /api/payments/verify`.
+5. Backend calls Paytm **Transaction Status API** server-side, checks `TXN_SUCCESS` and the amount, then marks the payment `COMPLETED`, the order `CONFIRMED` and fulfils stock. The browser response is never trusted.
+6. Paytm also posts a browser **callback** (`POST /api/payments/callback`) and a server-to-server **webhook** (`POST /api/payments/webhook/paytm`). Both are checksum-verified and independently confirm the payment.
+7. Refunds go through `POST /refund/apply`; final refund state arrives by webhook.
 
 ### Step-by-step procedure
 
-1. **Create a Razorpay account**
-   Dashboard: `dashboard.razorpay.com` → sign up (use the real business email/name).
+1. **Create a Paytm merchant account**
+   Dashboard: `dashboard.paytmpayments.com` → sign up / activate (use the real business email/name).
 
-2. **Get the API keys**
-   Dashboard → *Settings → API Keys* → **Generate Key**. Copy:
-   - `Key ID` (e.g. `rzp_test_XXXXX`)
-   - `Key Secret`
-   These appear once. Razorpay test keys start with `rzp_test_`.
+2. **Get the API credentials**
+   Dashboard → *API Keys* → copy:
+   - `MID` (staging MID is available immediately; production MID after activation)
+   - `Merchant Key`
+   These are server-side secrets. The staging environment also uses the `WEBSTAGING` website name.
 
 3. **Set the backend env** — `.env` in `Caviar-Beauty-Backend/`:
+   ```dotenv
+   PAYTM_ENV="staging"
+   PAYTM_MID="<your MID>"
+   PAYTM_MERCHANT_KEY="<your merchant key>"
+   PAYTM_WEBSITE_NAME=          # blank: WEBSTAGING (staging) / DEFAULT (production)
+   PAYTM_CALLBACK_URL=          # blank: BACKEND_PUBLIC_URL/api/payments/callback
+   PAYTM_HOST=                  # optional override only
+   BACKEND_PUBLIC_URL="https://<your-backend-domain>"
    ```
-   RAZORPAY_KEY_ID="rzp_test_XXXXX"
-   RAZORPAY_KEY_SECRET="<your key secret>"
-   RAZORPAY_WEBHOOK_SECRET="<any random string>"   # stored, see note below
+
+4. **Frontend env** — `.env` in `Caviar-Beauty-Frontend/` (optional):
+   ```dotenv
+   VITE_PAYTM_MID=
    ```
-   Note: per `razorpay.js:16` the webhook signature is validated against
-   `RAZORPAY_KEY_SECRET`. When creating the webhook in step 5, set the webhook
-   secret to the **same value** as your `RAZORPAY_KEY_SECRET`, so validation passes.
+   The checkout receives the MID, `txnToken` and script URL from the API at runtime; this is only a build-time fallback. Restart Vite after editing.
 
-4. **Frontend env** — `.env` in `Caviar-Beauty-Frontend/`:
+5. **Configure the webhook (Paytm Dashboard)**
+   Dashboard → *Developer Settings → Webhook URL*:
+   - **URL**: `https://<your-backend-domain>/api/payments/webhook/paytm`
+   - Enable **Payment status** notifications (refund events use the same URL).
+   - Paytm signs webhooks with your merchant key, so no separate webhook secret is needed.
+   - The browser return URL is `https://<your-backend-domain>/api/payments/callback` (derived from `BACKEND_PUBLIC_URL`; must be publicly reachable and on port 443 in production).
+
+6. **Restart the backend** so the new env loads. The log must say
+   `[PAYMENTS] Paytm ready (STAGING mode, MID ...)`.
+
+7. **Verify and test — staging**
+   ```bash
+   cd Caviar-Beauty-Backend
+   npm run verify:payments
+   npm run verify:payments -- --live
+   npm run test:payments:e2e
+   npm run dev
    ```
-   VITE_RAZORPAY_KEY_ID="rzp_test_XXXXX"
-   ```
-   This is cosmetic — at runtime the checkout uses the `keyId` returned by the
-   backend, so it doesn't need to match. Restart the Vite dev server after editing.
-
-5. **Configure the webhook (Razorpay Dashboard)**
-   Dashboard → *Settings → Webhooks* → **Add Webhook**:
-   - **URL**: `https://<your-backend-domain>/api/payments/webhook/razorpay`
-   - **Secret**: same as `RAZORPAY_KEY_SECRET` (see note in step 3)
-   - **Events** to enable:
-     - `payment.captured`
-     - `payment.failed`
-     - `refund.created`
-     - `refund.processed`
-   - Save. Razorpay sends a test event — check the backend log for
-     `{ received: true }` (a 400 with `Invalid signature` means the secret mismatches).
-
-6. **Restart the backend** so the new env loads.
-
-7. **Test — dev mode**
-   - Place a real order via checkout; the Razorpay modal opens in test mode.
-   - Use Razorpay test cards (numbers available on the Razorpay "Test Cards" page).
-   - Verify: order becomes `CONFIRMED`, `paymentStatus: COMPLETED`.
-   - Test refund: cancel/return order in admin → `initiateRefund`.
+   Place an order and pay with the Paytm staging test instruments shown on the
+   checkout. Verify: order `CONFIRMED`, `paymentStatus: COMPLETED`, stock moved from
+   reserved to sold. Test refund: cancel/return the order in admin → `initiateRefund`.
 
 8. **Go live**
-   - Switch account from test to live → new keys (`rzp_live_`).
-   - Update all three backend env values + the frontend's `VITE_RAZORPAY_KEY_ID`, then redeploy both Vercel projects.
-   - Production auth cookies use `Secure` and `SameSite=None` for separate domains; CSRF protection remains enabled.
+   - Complete Paytm activation, then set `PAYTM_ENV="production"`, the production
+     `PAYTM_MID` / `PAYTM_MERCHANT_KEY`, and `PAYTM_WEBSITE_NAME="DEFAULT"` (or leave blank).
+   - Register the production webhook/callback URLs on the production account.
+   - Redeploy both Vercel projects and set `NODE_ENV="production"` on the backend.
+   - Production auth cookies use `Secure` and `SameSite=None` for separate domains; CSRF protection remains enabled (the Paytm callback and webhook paths are exempt because they are checksum-authenticated).
 
 ---
 
@@ -146,9 +151,9 @@ for volume.
 ## 3. Verification checklist
 
 - [ ] Backend `/api/health` returns `{ "status": "ok", "db": "up" }`
-- [ ] `isRazorpayConfigured()` is `true` → checkout shows real gateway (no 503)
-- [ ] Razorpay webhook test event returns `{ received: true }`
-- [ ] Razorpay test payment completes → order `CONFIRMED` / `COMPLETED`
+- [ ] `isPaytmConfigured()` is `true` → checkout shows the real gateway (no 503)
+- [ ] Paytm webhook test event returns `{ received: true }`
+- [ ] Paytm staging test payment completes → order `CONFIRMED` / `COMPLETED`
 - [ ] `[EMAIL MOCK]` no longer appears in backend log
 - [ ] OTP email received in inbox via `/api/auth/resend-otp`
 - [ ] Password reset email received

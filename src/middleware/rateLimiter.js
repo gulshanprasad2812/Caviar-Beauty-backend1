@@ -35,3 +35,17 @@ export const emailLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// SMS costs money per message, so phone OTP requests are limited per account
+// (falling back to the number, then the IP, for unauthenticated calls).
+export const phoneLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyGenerator: (req) => {
+    const phone = typeof req.body?.phone === 'string' ? req.body.phone.replace(/\D/g, '') : '';
+    return req.user?.id || phone || req.ip;
+  },
+  message: { error: 'Too many verification codes requested for this number, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

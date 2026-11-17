@@ -113,6 +113,9 @@ export const createOrder = async (req, res, next) => {
       try {
         await reserveStock(tx, created.id, orderItems);
       } catch (err) {
+        // Preserve the underlying cause: silently replacing it with a generic
+        // message made stock/transaction failures very hard to diagnose.
+        console.error('[ORDERS] stock reservation failed:', err);
         throw new AppError(400, err.message.startsWith('INSUFFICIENT_STOCK:') ? err.message.replace('INSUFFICIENT_STOCK:', 'Insufficient stock for ') : 'Could not reserve stock');
       }
 

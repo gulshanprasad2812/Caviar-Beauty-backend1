@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getProducts, getProduct, searchProducts, getFeatured, getNewArrivals, getBestSellers, getAllProductsAdmin, createProduct, updateProduct, deleteProduct } from '../controllers/products.js';
-import { authenticate, authorize } from '../middleware/auth.js';
+import { authenticate, authorize, optionalAuth } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -15,6 +15,6 @@ router.post('/', authenticate, authorize('ADMIN'), createProduct);
 router.put('/:id', authenticate, authorize('ADMIN'), updateProduct);
 router.delete('/:id', authenticate, authorize('ADMIN'), deleteProduct);
 
-router.get('/:slug', getProduct);
+router.get('/:slug', optionalAuth, getProduct);
 
 export default router;

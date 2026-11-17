@@ -60,6 +60,11 @@ export const getProduct = async (req, res, next) => {
       },
     });
     if (!product) return res.status(404).json({ error: 'Product not found' });
+    // Soft delete keeps the row for order history, but it must disappear from the
+    // storefront. Admins can still load it for audit or reactivation.
+    if (!product.isActive && req.user?.role !== 'ADMIN') {
+      return res.status(404).json({ error: 'Product not found' });
+    }
 
     const related = await prisma.product.findMany({
       where: { categoryId: product.categoryId, id: { not: product.id }, isActive: true },

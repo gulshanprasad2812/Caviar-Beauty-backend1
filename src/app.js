@@ -15,7 +15,7 @@ import userRoutes from './routes/users.js';
 import couponRoutes from './routes/coupons.js';
 import addressRoutes from './routes/addresses.js';
 import paymentRoutes from './routes/payments.js';
-import uploadRoutes from './routes/upload.js';
+import uploadRoutes, { UPLOADS_DIR } from './routes/upload.js';
 import reviewRoutes from './routes/reviews.js';
 import newsletterRoutes from './routes/newsletter.js';
 import contactRoutes from './routes/contact.js';
@@ -23,6 +23,8 @@ import catalogRoutes from './routes/catalog.js';
 import shipmentRoutes from './routes/shipments.js';
 import invoiceRoutes from './routes/invoice.js';
 import cronRoutes from './routes/cron.js';
+import contentRoutes from './routes/content.js';
+import siteRoutes from './routes/site.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { auditLog } from './middleware/auditLog.js';
 import { setCsrfToken, csrfProtect } from './middleware/csrf.js';
@@ -56,12 +58,12 @@ app.use(helmet({
   contentSecurityPolicy: {
     useDefaults: true,
     directives: {
-      'script-src': ["'self'", 'https://checkout.razorpay.com', 'https://accounts.google.com'],
-      'frame-src': ["'self'", 'https://checkout.razorpay.com', 'https://accounts.google.com'],
+      'script-src': ["'self'", 'https://secure.paytmpayments.com', 'https://securestage.paytmpayments.com', 'https://paytmpayments.com', 'https://paytm.com', 'https://paytm.in', 'https://*.paytmpayments.com', 'https://*.paytmpayments.in', 'https://*.paytm.com', 'https://*.paytm.in', 'https://accounts.google.com'],
+      'frame-src': ["'self'", 'https://secure.paytmpayments.com', 'https://securestage.paytmpayments.com', 'https://paytmpayments.com', 'https://paytm.com', 'https://paytm.in', 'https://*.paytmpayments.com', 'https://*.paytmpayments.in', 'https://*.paytm.com', 'https://*.paytm.in', 'https://accounts.google.com'],
       'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       'font-src': ["'self'", 'https://fonts.gstatic.com', 'data:'],
       'img-src': ["'self'", 'data:', 'blob:', 'https:'],
-      'connect-src': ["'self'", 'https://checkout.razorpay.com', 'https://api.razorpay.com', 'https://accounts.google.com', supabaseUrl].filter(Boolean),
+      'connect-src': ["'self'", 'https://secure.paytmpayments.com', 'https://securestage.paytmpayments.com', 'https://paytmpayments.com', 'https://*.paytmpayments.com', 'https://*.paytmpayments.in', 'https://*.paytm.com', 'https://*.paytm.in', 'https://accounts.google.com', supabaseUrl].filter(Boolean),
     },
   },
 }));
@@ -79,12 +81,18 @@ app.use(express.json({ limit: '10mb', verify: (req, _res, buf) => { req.rawBody 
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(morgan(isProd ? 'combined' : 'dev'));
+// Images saved by the disk fallback in routes/upload.js are referenced as
+// /uploads/<file>.webp, so serve that folder when it exists.
+app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '7d', fallthrough: true }));
 app.use(setCsrfToken);
 app.use('/api', csrfProtect);
 app.use('/api', auditLog);
 
 const decimalToNumber = (value) => {
   if (value instanceof Prisma.Decimal) return value.toNumber();
+  // Keep Dates and Buffers intact: recursing into them would strip their value
+  // and serialise every timestamp as {}.
+  if (value instanceof Date || Buffer.isBuffer(value)) return value;
   if (Array.isArray(value)) return value.map(decimalToNumber);
   if (value && typeof value === 'object') {
     const out = {};
@@ -119,6 +127,8 @@ app.use('/api/catalog', catalogRoutes);
 app.use('/api/shipments', shipmentRoutes);
 app.use('/api', invoiceRoutes);
 app.use('/api/cron', cronRoutes);
+app.use('/api/content', contentRoutes);
+app.use('/api/site', siteRoutes);
 
 app.get('/api/health', async (_req, res) => {
   try {

@@ -147,7 +147,7 @@ export function refundTemplate(order, refund, firstName) {
     <p>Hello ${firstName || 'there'},</p>
     <p>Your refund for order <strong>${order.orderNumber}</strong> has been ${refund.status === 'PROCESSED' ? 'processed' : 'initiated'}.</p>
     <div class="otp"><span>${money(refund.amount)}</span></div>
-    <p>Refund ID: <strong>${refund.razorpayRefundId || '—'}</strong></p>
+    <p>Refund ID: <strong>${refund.paytmRefundId || refund.paytmRefId || '—'}</strong></p>
     <p>Amounts usually reflect in your account within <strong>3-7 business days</strong> depending on your bank.</p>
   </div>
   <div class="footer"><p>Caviar Beauty — Luxury Redefined</p></div>

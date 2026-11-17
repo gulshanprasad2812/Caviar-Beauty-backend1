@@ -76,7 +76,10 @@ router.post('/', authenticate, authorize('ADMIN'), storeLimiter, upload.single('
     }
 
     res.json({ url });
-  } catch (err) { next(err); }
+  } catch (err) {
+    console.error('[upload] failed:', err);
+    res.status(500).json({ error: err.message, code: err.code });
+  }
 });
 
 export default router;

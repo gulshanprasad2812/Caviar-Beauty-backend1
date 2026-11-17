@@ -500,3 +500,14 @@ model SiteSetting {
   updatedBy           String?
   updatedAt           DateTime @updatedAt
 }
+
+/// Fallback image store for deployments without Supabase Storage. The upload
+/// route writes processed WebP bytes here and /uploads/:filename serves them.
+model UploadedImage {
+  id        String   @id @default(uuid())
+  filename  String   @unique
+  mimeType  String   @default("image/webp")
+  size      Int
+  data      Bytes
+  createdAt DateTime @default(now())
+}

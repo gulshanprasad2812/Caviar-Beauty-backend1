@@ -1,13 +1,13 @@
 import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import sharp from 'sharp';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { storeLimiter } from '../middleware/rateLimiter.js';
+import { prisma } from '../db.js';
 
 const router = Router();
 
@@ -55,9 +55,10 @@ async function uploadToSupabase(buffer, filename) {
   return data.publicUrl;
 }
 
-async function uploadToDisk(buffer, filename) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  await fs.promises.writeFile(path.join(UPLOADS_DIR, filename), buffer);
+async function uploadToDatabase(buffer, filename) {
+  await prisma.uploadedImage.create({
+    data: { filename, mimeType: 'image/webp', size: buffer.length, data: buffer },
+  });
   return `/uploads/${filename}`;
 }
 
@@ -71,7 +72,7 @@ router.post('/', authenticate, authorize('ADMIN'), storeLimiter, upload.single('
     if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
       url = await uploadToSupabase(processed, filename);
     } else {
-      url = await uploadToDisk(processed, filename);
+      url = await uploadToDatabase(processed, filename);
     }
 
     res.json({ url });

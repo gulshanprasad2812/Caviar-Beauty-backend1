@@ -84,6 +84,19 @@ app.use(morgan(isProd ? 'combined' : 'dev'));
 // Images saved by the disk fallback in routes/upload.js are referenced as
 // /uploads/<file>.webp, so serve that folder when it exists.
 app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '7d', fallthrough: true }));
+// Serverless deployments have no writable disk: images uploaded without
+// Supabase Storage live in Postgres and are streamed from here instead.
+app.get('/uploads/:filename', async (req, res, next) => {
+  try {
+    const image = await prisma.uploadedImage.findUnique({ where: { filename: req.params.filename } });
+    if (!image) return next();
+    res.set('Content-Type', image.mimeType);
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.send(Buffer.from(image.data));
+  } catch (err) {
+    next(err);
+  }
+});
 app.use(setCsrfToken);
 app.use('/api', csrfProtect);
 app.use('/api', auditLog);

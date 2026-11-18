@@ -11,6 +11,9 @@ export class AppError extends Error {
 export const errorHandler = (err, _req, res, _next) => {
   console.error('Error:', err);
 
+  // Never let a CDN cache an error response, even for a public read path.
+  res.setHeader('Cache-Control', 'no-store');
+
   if (err?.message === 'Not allowed by CORS') {
     return res.status(403).json({ error: 'Origin not allowed' });
   }

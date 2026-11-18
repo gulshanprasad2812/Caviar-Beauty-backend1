@@ -1,10 +1,17 @@
 import crypto from 'crypto';
+import { isPublicCacheableGet } from '../utils/cache.js';
 
 export const CSRF_COOKIE = 'csrfToken';
 
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export const setCsrfToken = (req, res, next) => {
+  // Public GETs are cached at the edge and shared between visitors, so they
+  // must not carry a cookie or a token header: a cached token would not match
+  // the visitor's own cookie. Browsers get their token from the login response
+  // (or from the first POST), and CSRF is not enforced without an auth cookie.
+  if (isPublicCacheableGet(req)) return next();
+
   const token = req.cookies?.[CSRF_COOKIE] || crypto.randomBytes(32).toString('hex');
   if (!req.cookies?.[CSRF_COOKIE]) {
     res.cookie(CSRF_COOKIE, token, {

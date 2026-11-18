@@ -56,12 +56,6 @@ const cleanHeroSlides = (raw) => {
     }));
 };
 
-const ensureSettings = () => prisma.siteSetting.upsert({
-  where: { id: 'default' },
-  update: {},
-  create: { id: 'default', ...defaultSiteSettings },
-});
-
 const publicSettings = (settings) => {
   const { updatedBy, ...rest } = settings;
   return rest;
@@ -69,7 +63,12 @@ const publicSettings = (settings) => {
 
 export const getSiteSettings = async (_req, res, next) => {
   try {
-    res.json(publicSettings(await ensureSettings()));
+    // Read-only on purpose: this used to run an upsert on every page view, which
+    // turned a cached-friendly read into a write to the database. A missing row
+    // is answered from the shipped defaults; saving the settings in the admin
+    // panel creates it.
+    const settings = await prisma.siteSetting.findUnique({ where: { id: 'default' } });
+    res.json(publicSettings(settings || { id: 'default', ...defaultSiteSettings, updatedAt: null }));
   } catch (err) { next(err); }
 };
 

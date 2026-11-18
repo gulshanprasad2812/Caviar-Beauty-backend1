@@ -28,6 +28,7 @@ import siteRoutes from './routes/site.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { auditLog } from './middleware/auditLog.js';
 import { setCsrfToken, csrfProtect } from './middleware/csrf.js';
+import { applyCachePolicy } from './utils/cache.js';
 import { prisma } from './db.js';
 import { Prisma } from '@prisma/client';
 
@@ -80,7 +81,9 @@ app.use(compression());
 app.use(express.json({ limit: '10mb', verify: (req, _res, buf) => { req.rawBody = buf.toString('utf8'); } }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.use(morgan(isProd ? 'combined' : 'dev'));
+// Request logging is noise in production and costs a little time per request;
+// it stays on for local development.
+if (!isProd) app.use(morgan('dev'));
 // Images saved by the disk fallback in routes/upload.js are referenced as
 // /uploads/<file>.webp, so serve that folder when it exists.
 app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '7d', fallthrough: true }));
@@ -98,6 +101,10 @@ app.get('/uploads/:filename', async (req, res, next) => {
   }
 });
 app.use(setCsrfToken);
+// CDN policy for the API: private by default, shared caching only for the
+// public storefront reads. Placed after the /uploads handlers so streamed
+// images keep their long-lived immutable caching.
+app.use(applyCachePolicy);
 app.use('/api', csrfProtect);
 app.use('/api', auditLog);
 

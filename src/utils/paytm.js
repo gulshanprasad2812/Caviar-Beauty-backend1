@@ -285,14 +285,39 @@ export const getRefundStatus = async ({ orderId, refId }) => {
 /**
  * Safe-to-expose payment configuration for the storefront. The MID is public
  * (it is embedded in the JS Checkout URL); the merchant key is never returned.
+ *
+ * `PAYMENTS_MODE=dummy` swaps the gateway for a QR page that records payments
+ * locally. It is meant for demos and testing; no money moves.
  */
+export const getPaymentsMode = () =>
+  readEnv('PAYMENTS_MODE').toLowerCase() === 'dummy' ? 'dummy' : 'paytm';
+
+export const isDummyPayments = () => getPaymentsMode() === 'dummy';
+
 export const getPublicPaymentConfig = () => {
+  if (isDummyPayments()) {
+    return {
+      provider: 'paytm',
+      configured: true,
+      dummy: true,
+      mode: 'dummy',
+      environment: 'dummy',
+      webhookConfigured: false,
+      mid: null,
+      currency: 'INR',
+      checkoutScriptUrl: null,
+      callbackUrl: null,
+      missing: [],
+    };
+  }
+
   const configured = isPaytmConfigured();
   const environment = getPaytmEnvironment();
   const missing = getMissingPaymentConfig();
   return {
     provider: 'paytm',
     configured,
+    dummy: false,
     webhookConfigured: isWebhookConfigured(),
     mid: configured ? getMid() : null,
     mode: environment === 'production' ? 'live' : 'test',

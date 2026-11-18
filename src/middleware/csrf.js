@@ -24,7 +24,9 @@ export const csrfProtect = (req, res, next) => {
   if (req.headers.authorization?.startsWith('Bearer ')) return next();
   // Paytm posts the browser callback and server-to-server webhook directly to
   // the API. They are authenticated by the Paytm checksum, not by a CSRF token.
+  // Dummy QR endpoints are authenticated by the unguessable session token.
   if (/^\/payments\/callback\/?$/.test(req.path) || /^\/payments\/webhook\//.test(req.path)) return next();
+  if (/^\/payments\/session\//.test(req.path)) return next();
   if (!req.cookies?.token) return next();
 
   const token = req.cookies[CSRF_COOKIE];

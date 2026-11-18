@@ -376,6 +376,8 @@ model Payment {
   currency        String        @default("INR")
   status          String        @default("PENDING")
   gatewayResponse String?
+  publicToken     String?       @unique
+  expiresAt       DateTime?
   createdAt       DateTime      @default(now())
 
   order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)

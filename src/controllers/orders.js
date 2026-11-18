@@ -1,7 +1,7 @@
 import { prisma } from '../db.js';
 import { generateOrderNumber } from '../utils/helpers.js';
 import { AppError } from '../middleware/errorHandler.js';
-import { sendOrderConfirmationEmail, sendOrderShippedEmail, sendOrderDeliveredEmail } from '../services/email.js';
+import { sendOrderShippedEmail, sendOrderDeliveredEmail } from '../services/email.js';
 import { reserveStock, releaseStock, availableStock } from '../services/inventory.js';
 import { Prisma } from '@prisma/client';
 
@@ -138,10 +138,8 @@ export const createOrder = async (req, res, next) => {
       return created;
     });
 
-    const userEmail = user.email;
-    const userFirstName = user.firstName;
-    sendOrderConfirmationEmail(userEmail, userFirstName, { ...order, items: orderItems }).catch((err) => console.error('[EMAIL] order confirmation failed:', err.message));
-
+    // The confirmation email is sent once payment is recorded (see
+    // markPaymentCompleted in payments.js), not when the order is created.
     res.status(201).json(order);
   } catch (err) { next(err); }
 };

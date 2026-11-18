@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { prisma } from '../db.js';
 import { AppError } from '../middleware/errorHandler.js';
 import {
@@ -8,11 +9,12 @@ import {
   getTransactionStatus,
   getWebsiteName,
   initiateTransaction,
+  isDummyPayments,
   isPaytmConfigured,
   verifyCallbackChecksum,
   verifyWebhookSignature,
 } from '../utils/paytm.js';
-import { sendRefundEmail } from '../services/email.js';
+import { sendOrderConfirmationEmail, sendRefundEmail } from '../services/email.js';
 import { fulfillStock, releaseStock } from '../services/inventory.js';
 
 /** Paytm allows alphanumerics plus @ - _ . in an order id, max 50 characters. */
@@ -32,6 +34,76 @@ const gatewaySnapshot = (payment) => {
     return {};
   }
 };
+
+const frontendOrigin = () => (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
+
+/** How long a dummy QR stays scannable, in minutes. */
+const sessionMinutes = () => {
+  const value = parseInt(process.env.PAYMENT_SESSION_MINUTES || '15', 10);
+  return Number.isFinite(value) && value > 0 ? value : 15;
+};
+
+const newPublicToken = () => crypto.randomBytes(24).toString('base64url');
+
+const sessionPayload = (order, payment) => ({
+  mode: 'dummy',
+  token: payment.publicToken,
+  url: `${frontendOrigin()}/pay/${payment.publicToken}`,
+  orderId: order.id,
+  orderNumber: order.orderNumber,
+  amount: order.total,
+  currency: order.currency,
+  expiresAt: payment.expiresAt,
+  expiresInSeconds: Math.max(
+    0,
+    Math.round((new Date(payment.expiresAt).getTime() - Date.now()) / 1000)
+  ),
+});
+
+/**
+ * Resolves a scanned QR token. The effective status folds gateway state,
+ * order cancellation and time-based expiry into one value the UI can render.
+ */
+const loadPaymentSession = async (token) => {
+  if (!token) return null;
+  const payment = await prisma.payment.findUnique({ where: { publicToken: token } });
+  if (!payment) return null;
+  const order = await prisma.order.findUnique({
+    where: { id: payment.orderId },
+    select: {
+      id: true,
+      orderNumber: true,
+      status: true,
+      paymentStatus: true,
+      total: true,
+      currency: true,
+    },
+  });
+  if (!order) return null;
+
+  let status = 'PENDING';
+  if (payment.status === 'COMPLETED') status = 'PAID';
+  else if (payment.status === 'FAILED') status = 'FAILED';
+  else if (order.status === 'CANCELLED') status = 'CANCELLED';
+  else if (!payment.expiresAt || payment.expiresAt.getTime() <= Date.now()) status = 'EXPIRED';
+
+  return { payment, order, status };
+};
+
+const sessionView = ({ payment, order, status }) => ({
+  status,
+  amount: payment.amount,
+  currency: payment.currency,
+  orderNumber: order.orderNumber,
+  expiresAt: payment.expiresAt,
+  paidAt: (() => {
+    try {
+      return JSON.parse(payment.gatewayResponse || '{}').paidAt || null;
+    } catch {
+      return null;
+    }
+  })(),
+});
 
 const describeResult = (result) => ({
   resultInfo: result?.resultInfo || null,
@@ -55,7 +127,7 @@ const markPaymentCompleted = async (order, result, source) => {
     return prisma.order.findUnique({ where: { id: order.id } });
   }
 
-  return prisma.$transaction(async (tx) => {
+  const { updatedOrder, justPaid } = await prisma.$transaction(async (tx) => {
     // Claim the payment atomically so a callback and a webhook arriving at the
     // same time cannot both fulfil the same stock.
     const claimed = await tx.payment.updateMany({
@@ -63,9 +135,10 @@ const markPaymentCompleted = async (order, result, source) => {
       data: { status: 'PROCESSING' },
     });
     if (claimed.count === 0) {
-      return tx.order.findUnique({ where: { id: order.id } });
+      return { updatedOrder: await tx.order.findUnique({ where: { id: order.id } }), justPaid: false };
     }
 
+    const paidAt = new Date().toISOString();
     await tx.payment.update({
       where: { orderId: order.id },
       data: {
@@ -74,6 +147,7 @@ const markPaymentCompleted = async (order, result, source) => {
           orderId: payment.transactionId,
           ...describeResult(result),
           source,
+          paidAt,
         }),
       },
     });
@@ -84,15 +158,42 @@ const markPaymentCompleted = async (order, result, source) => {
     });
     if (!history) {
       await tx.orderStatusHistory.create({
-        data: { orderId: order.id, status: 'CONFIRMED', note: `Payment received via Paytm (${source})` },
+        data: {
+          orderId: order.id,
+          status: 'CONFIRMED',
+          note:
+            source === 'dummy-qr'
+              ? 'Payment received (test QR)'
+              : `Payment received via Paytm (${source})`,
+        },
       });
     }
 
-    return tx.order.update({
-      where: { id: order.id },
-      data: { paymentStatus: 'COMPLETED', status: 'CONFIRMED' },
-    });
+    return {
+      updatedOrder: await tx.order.update({
+        where: { id: order.id },
+        data: { paymentStatus: 'COMPLETED', status: 'CONFIRMED' },
+      }),
+      justPaid: true,
+    };
   });
+
+  // The confirmation email is sent once, when money is actually recorded
+  // (previously it went out at order creation, before payment).
+  if (justPaid) {
+    prisma.order
+      .findUnique({
+        where: { id: order.id },
+        include: { items: true, user: { select: { email: true, firstName: true } } },
+      })
+      .then((fresh) => {
+        if (!fresh?.user?.email) return null;
+        return sendOrderConfirmationEmail(fresh.user.email, fresh.user.firstName, fresh);
+      })
+      .catch((err) => console.error('[EMAIL] order confirmation failed:', err.message));
+  }
+
+  return updatedOrder;
 };
 
 /**
@@ -222,6 +323,144 @@ export const getPaymentConfig = (_req, res) => {
 };
 
 /**
+ * Creates (or reuses) the scannable dummy payment session for an order. The
+ * returned URL is what the QR encodes; the token is unguessable and single-use.
+ */
+export const createPaymentSession = async (req, res, next) => {
+  try {
+    if (!isDummyPayments()) throw new AppError(404, 'Dummy payments are not enabled');
+    const { orderId } = req.body || {};
+    if (!orderId) throw new AppError(400, 'orderId is required');
+
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!order || order.userId !== req.user.id) throw new AppError(404, 'Order not found');
+    if (order.paymentStatus === 'COMPLETED') throw new AppError(400, 'Order already paid');
+    if (order.status === 'CANCELLED') {
+      throw new AppError(400, 'This order was cancelled. Please place a new order.');
+    }
+
+    const existing = await prisma.payment.findUnique({ where: { orderId } });
+    if (
+      existing?.status === 'PENDING' &&
+      existing.publicToken &&
+      existing.expiresAt &&
+      existing.expiresAt.getTime() > Date.now()
+    ) {
+      return res.json(sessionPayload(order, existing));
+    }
+
+    // Rotating the token invalidates any previously scanned (expired) QR.
+    const token = newPublicToken();
+    const expiresAt = new Date(Date.now() + sessionMinutes() * 60000);
+    const transactionId = existing?.transactionId || toPaytmOrderId(order);
+    const payment = await prisma.payment.upsert({
+      where: { orderId },
+      update: {
+        method: 'Paytm',
+        transactionId,
+        amount: order.total,
+        currency: order.currency,
+        status: 'PENDING',
+        publicToken: token,
+        expiresAt,
+        gatewayResponse: JSON.stringify({ mode: 'dummy', createdAt: new Date().toISOString() }),
+      },
+      create: {
+        orderId,
+        method: 'Paytm',
+        transactionId,
+        amount: order.total,
+        currency: order.currency,
+        status: 'PENDING',
+        publicToken: token,
+        expiresAt,
+        gatewayResponse: JSON.stringify({ mode: 'dummy', createdAt: new Date().toISOString() }),
+      },
+    });
+
+    res.status(201).json(sessionPayload(order, payment));
+  } catch (err) {
+    if (err instanceof AppError) return next(err);
+    return next(new AppError(500, `Could not create the payment session: ${err.message}`));
+  }
+};
+
+/** Public page data for the phone that scanned the QR. No personal data. */
+export const getPaymentSession = async (req, res, next) => {
+  try {
+    const session = await loadPaymentSession(req.params.token);
+    if (!session) throw new AppError(404, 'Payment link not found');
+    res.json(sessionView(session));
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** Tiny polling payload for the checkout tab. */
+export const getPaymentSessionStatus = async (req, res, next) => {
+  try {
+    const session = await loadPaymentSession(req.params.token);
+    if (!session) throw new AppError(404, 'Payment link not found');
+    res.json({ status: session.status, expiresAt: session.payment.expiresAt });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * The dummy "Pay" action. The amount comes from the order row, never from the
+ * request, and completion is claimed atomically so double taps pay once.
+ */
+export const payPaymentSession = async (req, res, next) => {
+  try {
+    const session = await loadPaymentSession(req.params.token);
+    if (!session) throw new AppError(404, 'Payment link not found');
+
+    const { payment, order, status } = session;
+    if (status === 'PAID') {
+      return res.json({
+        paid: true,
+        alreadyPaid: true,
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+      });
+    }
+    if (status === 'CANCELLED') throw new AppError(409, 'This order was cancelled');
+    if (status === 'FAILED') throw new AppError(409, 'This payment is no longer available');
+    if (status === 'EXPIRED') {
+      throw new AppError(410, 'This payment link expired. Generate a new QR on your computer.');
+    }
+
+    const fullOrder = await prisma.order.findUnique({
+      where: { id: order.id },
+      include: { items: true },
+    });
+    if (!fullOrder) throw new AppError(404, 'Order not found');
+
+    await markPaymentCompleted(
+      fullOrder,
+      {
+        resultInfo: { resultStatus: 'TXN_SUCCESS', resultMsg: 'Test payment approved' },
+        txnAmount: payment.amount.toString(),
+        paymentMode: 'UPI_QR',
+      },
+      'dummy-qr'
+    );
+
+    const fresh = await prisma.order.findUnique({ where: { id: order.id } });
+    res.json({
+      paid: true,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      status: fresh?.status || 'CONFIRMED',
+    });
+  } catch (err) {
+    if (err instanceof AppError) return next(err);
+    return next(new AppError(500, `Could not complete the test payment: ${err.message}`));
+  }
+};
+
+/**
  * Verifies a payment with Paytm's Transaction Status API. The browser cannot be
  * trusted to report success; only the server-to-server status response is.
  */
@@ -241,6 +480,23 @@ export const verifyPayment = async (req, res, next) => {
         order: await prisma.order.findUnique({ where: { id: order.id } }),
       });
     }
+
+    // Dummy mode: the phone completes the payment; this only reports progress.
+    if (isDummyPayments()) {
+      if (payment.status === 'PENDING') {
+        if (payment.expiresAt && payment.expiresAt.getTime() <= Date.now()) {
+          throw new AppError(410, 'The payment QR expired. Generate a new one.');
+        }
+        return res.status(202).json({
+          message: 'Waiting for payment on the phone',
+          pending: true,
+          status: 'PENDING',
+          orderId: order.id,
+        });
+      }
+      throw new AppError(400, 'This payment is no longer pending');
+    }
+
     if (payment.status !== 'PENDING') {
       throw new AppError(400, 'This payment is no longer pending');
     }
@@ -302,8 +558,6 @@ const findOrderByPaytmOrderId = async (paytmOrderId) => {
   });
   return payment ? { payment, order: payment.order } : null;
 };
-
-const frontendOrigin = () => (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
 
 /**
  * Public browser return endpoint. Paytm POSTs form-encoded transaction details
@@ -449,6 +703,45 @@ export const initiateRefund = async (req, res, next) => {
     if (!order.payment || order.payment.status !== 'COMPLETED') {
       throw new AppError(400, 'No completed payment to refund');
     }
+
+    // Test mode: refunds are recorded locally, without calling a gateway.
+    if (isDummyPayments()) {
+      const existingRefund = await prisma.refund.findFirst({
+        where: { orderId, status: { not: 'FAILED' } },
+      });
+      if (existingRefund) throw new AppError(400, 'Refund already initiated for this order');
+
+      const refund = await prisma.refund.create({
+        data: {
+          orderId,
+          paymentId: order.payment.id,
+          amount: order.total,
+          currency: order.currency,
+          status: 'PROCESSED',
+          reason: reason || 'Test-mode refund',
+          initiatedBy: req.user.id,
+          processedAt: new Date(),
+          gatewayResponse: JSON.stringify({ mode: 'dummy' }),
+        },
+      });
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { paymentStatus: 'REFUNDED' },
+      });
+
+      const user = await prisma.user.findUnique({
+        where: { id: order.userId },
+        select: { email: true, firstName: true },
+      });
+      if (user) {
+        sendRefundEmail(user.email, user.firstName, order, refund).catch((err) =>
+          console.error('[EMAIL] refund notification failed:', err.message)
+        );
+      }
+
+      return res.json({ message: 'Refund processed (test mode)', refund });
+    }
+
     if (!isPaytmConfigured()) throw new AppError(503, 'Payment gateway is not configured for refunds');
 
     const snapshot = gatewaySnapshot(order.payment);

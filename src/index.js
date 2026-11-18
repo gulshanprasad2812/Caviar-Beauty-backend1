@@ -6,6 +6,7 @@ import 'dotenv/config';
 import { assertSecureConfig, reportPaymentConfig } from './utils/security.js';
 import { reportEmailConfig } from './services/email.js';
 import { reportSmsConfig } from './services/sms.js';
+import { reportFirebaseConfig } from './services/firebase.js';
 import { prisma } from './db.js';
 import app from './app.js';
 import { startAutoCancelJob, stopAutoCancelJob } from './jobs/autoCancelOrders.js';
@@ -13,6 +14,7 @@ import { startAutoCancelJob, stopAutoCancelJob } from './jobs/autoCancelOrders.j
 assertSecureConfig();
 reportPaymentConfig();
 reportEmailConfig();
+reportFirebaseConfig();
 reportSmsConfig();
 
 const PORT = process.env.PORT || 4000;

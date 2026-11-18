@@ -163,6 +163,82 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => 
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[char]));
 
+/**
+ * Shop-facing copy of a paid order. It goes to the store's own inbox
+ * (CONTACT_TO) so the owner is told about every purchase as it happens. The
+ * customer's details are escaped because they are user-supplied.
+ */
+export function orderShopNotificationTemplate(order, customer) {
+  const items = (order?.items || []).map((i) => `
+    <tr>
+      <td style="padding:8px;border-bottom:1px solid #eee;font-size:13px;color:#333;">${escapeHtml(i.name)} &times; ${i.quantity}</td>
+      <td style="padding:8px;border-bottom:1px solid #eee;font-size:13px;color:#333;text-align:right;">${money(i.price * i.quantity)}</td>
+    </tr>`).join('');
+
+  const addresses = order?.addresses || [];
+  const ship = addresses.find((a) => a.id === order?.shippingAddressId) || addresses[0];
+  const address = ship ? `
+    <p style="font-size:13px;line-height:1.7;color:#333;margin:0 0 16px;">
+      ${escapeHtml(ship.firstName)} ${escapeHtml(ship.lastName)}<br/>
+      ${escapeHtml(ship.street)}<br/>
+      ${escapeHtml(ship.city)}, ${escapeHtml(ship.state)} ${escapeHtml(ship.zipCode)}<br/>
+      ${escapeHtml(ship.country)}${ship.phone ? `<br/>${escapeHtml(ship.phone)}` : ''}
+    </p>` : '';
+
+  const placedAt = order?.createdAt ? new Date(order.createdAt).toLocaleString('en-IN') : new Date().toLocaleString('en-IN');
+  const customerName = [customer?.firstName, customer?.lastName].filter(Boolean).join(' ') || 'a customer';
+
+  return `<!DOCTYPE html><html><head>${baseStyle}</head><body>
+<div class="container">
+  <div class="header"><h1>Caviar Beauty</h1></div>
+  <div class="body">
+    <h2>New order received</h2>
+    <p>An order was paid and confirmed.</p>
+    <table style="width:100%;border-collapse:collapse;margin:8px 0 16px;">
+      <tr>
+        <td style="padding:8px;font-size:13px;color:#666;width:110px;">Order</td>
+        <td style="padding:8px;font-size:13px;color:#333;">${escapeHtml(order?.orderNumber)}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;font-size:13px;color:#666;">Customer</td>
+        <td style="padding:8px;font-size:13px;color:#333;">${escapeHtml(customerName)}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;font-size:13px;color:#666;">Email</td>
+        <td style="padding:8px;font-size:13px;color:#333;">${escapeHtml(customer?.email)}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;font-size:13px;color:#666;">Placed</td>
+        <td style="padding:8px;font-size:13px;color:#333;">${escapeHtml(placedAt)}</td>
+      </tr>
+    </table>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+      ${items}
+      <tr>
+        <td style="padding:8px;font-size:13px;color:#666;">Subtotal</td>
+        <td style="padding:8px;font-size:13px;color:#666;text-align:right;">${money(order?.subtotal)}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;font-size:13px;color:#666;">Shipping</td>
+        <td style="padding:8px;font-size:13px;color:#666;text-align:right;">${money(order?.shippingCost)}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;font-size:13px;color:#666;">Tax</td>
+        <td style="padding:8px;font-size:13px;color:#666;text-align:right;">${money(order?.tax)}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px;font-size:14px;font-weight:700;color:#1a1a1a;">Total</td>
+        <td style="padding:8px;font-size:14px;font-weight:700;color:#1a1a1a;text-align:right;">${money(order?.total)}</td>
+      </tr>
+    </table>
+    ${address ? `<p style="font-size:12px;color:#999;margin:0 0 4px;text-transform:uppercase;letter-spacing:1px;">Ship to</p>${address}` : ''}
+    <p style="text-align:center;margin:24px 0"><a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/admin/orders" class="btn">Open Admin Panel</a></p>
+    <p style="font-size:12px;color:#999;">Reply to this email to answer ${escapeHtml(customer?.email)} directly.</p>
+  </div>
+  <div class="footer"><p>Caviar Beauty &mdash; Luxury Redefined</p></div>
+</div></body></html>`;
+}
+
 export function contactNotificationTemplate(contact) {
   const when = contact?.createdAt ? new Date(contact.createdAt).toLocaleString('en-IN') : new Date().toLocaleString('en-IN');
   const body = escapeHtml(contact?.message).replace(/\r?\n/g, '<br/>');

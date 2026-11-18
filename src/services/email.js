@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer';
-import { forgotPasswordTemplate, verifyEmailTemplate, welcomeTemplate, orderConfirmationTemplate, orderShippedTemplate, orderDeliveredTemplate, refundTemplate, contactNotificationTemplate } from '../templates/email.js';
+import { forgotPasswordTemplate, verifyEmailTemplate, welcomeTemplate, orderConfirmationTemplate, orderShippedTemplate, orderDeliveredTemplate, refundTemplate, contactNotificationTemplate, orderShopNotificationTemplate } from '../templates/email.js';
 import { maskEmail } from '../utils/otp.js';
 
 let transporter = null;
@@ -164,6 +164,28 @@ export function sendContactNotification(contact) {
 }
 
 /**
+ * Shop-facing copy of an order, sent to the store's own inbox (CONTACT_TO,
+ * falling back to MAIL_FROM / SMTP_USER). Reply-To is the customer, so replying
+ * in the mail client answers the buyer instead of the shop itself.
+ */
+export function sendOrderShopNotification(order) {
+  const to = contactNotificationRecipient();
+  if (!to) {
+    console.warn('[EMAIL] No shop recipient configured (set CONTACT_TO); the new order was only stored.');
+    return Promise.resolve({ delivered: false, mocked: true, provider: 'none', reason: 'no-recipient' });
+  }
+  const customer = order?.user || null;
+  const who = customer?.firstName || customer?.email || 'a customer';
+  return sendMail({
+    from: fromAddress(),
+    to,
+    replyTo: customer?.email || undefined,
+    subject: `New order ${order.orderNumber} from ${who}`,
+    html: orderShopNotificationTemplate(order, customer),
+  });
+}
+
+/**
  * Boot-time report, mirroring reportPaymentConfig(). Email is optional for the
  * API to start, but registration, email verification and password reset all
  * depend on it, so the state is logged loudly.
@@ -174,8 +196,8 @@ export function reportEmailConfig() {
   if (configured) {
     console.log(`[EMAIL] SMTP configured (${host}:${port}) - verification and reset emails will be delivered.`);
     console.log(contactTo
-      ? `[EMAIL] Contact-form submissions are sent to ${maskEmail(contactTo)}.`
-      : '[EMAIL] Set CONTACT_TO so contact-form submissions are emailed to the shop inbox.');
+      ? `[EMAIL] Contact-form submissions and new orders are sent to ${maskEmail(contactTo)}.`
+      : '[EMAIL] Set CONTACT_TO so contact-form submissions and new orders are emailed to the shop inbox.');
     return { configured: true, missing: [] };
   }
   console.warn(`[EMAIL] Email delivery is NOT configured. Missing or placeholder: ${missing.join(', ')}.

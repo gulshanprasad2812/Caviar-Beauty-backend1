@@ -4,6 +4,7 @@ import { generateOTP, hashOtp, matchesOtp, otpExpiry, isExpired, MAX_OTP_ATTEMPT
 import { AppError } from '../middleware/errorHandler.js';
 import { sendForgotPasswordOTP, sendVerificationOTP, sendWelcomeEmail, isEmailConfigured } from '../services/email.js';
 import { sendPhoneOtp, isSmsConfigured } from '../services/sms.js';
+import { isFirebaseConfigured, verifyFirebaseIdToken } from '../services/firebase.js';
 import { verifyGoogleAccessToken, verifyAppleIdentityToken } from '../utils/oauth.js';
 import { z } from 'zod';
 
@@ -46,10 +47,24 @@ const lower = (email) => String(email || '').trim().toLowerCase();
  * Public: lets the storefront tell the user up front whether verification codes
  * can actually be delivered (never exposes credentials).
  */
+/**
+ * Describes the active phone-verification channel. With Firebase the SMS is
+ * sent by the client SDK, so `clientSend` tells the web app to use it.
+ */
+const smsChannelConfig = () => {
+  if (isFirebaseConfigured()) {
+    return { channel: 'sms', provider: 'firebase', configured: true, clientSend: true };
+  }
+  if (isSmsConfigured()) {
+    return { channel: 'sms', provider: 'twilio', configured: true, clientSend: false };
+  }
+  return { channel: 'sms', provider: 'none', configured: false, clientSend: false };
+};
+
 export const getVerificationConfig = (_req, res) => {
   res.json({
     email: { channel: 'email', configured: isEmailConfigured() },
-    sms: { channel: 'sms', provider: 'twilio', configured: isSmsConfigured() },
+    sms: smsChannelConfig(),
   });
 };
 
@@ -268,6 +283,22 @@ export const requestPhoneOTP = async (req, res, next) => {
     const phone = normalizePhone(req.body?.phone || user.phone);
     if (!isValidPhone(phone)) throw new AppError(400, 'A valid phone number (at least 10 digits) is required');
 
+    // With Firebase the SMS is sent by the browser SDK, not by this server.
+    // Record the number so verification can mark the account.
+    if (isFirebaseConfigured()) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { phone, phoneVerified: false },
+      });
+      return res.json({
+        message: 'Verify your number with the Firebase client.',
+        clientSend: true,
+        smsSent: false,
+        smsConfigured: true,
+        smsProvider: 'firebase',
+      });
+    }
+
     const otp = generateOTP();
     await prisma.user.update({
       where: { id: user.id },
@@ -286,18 +317,44 @@ export const requestPhoneOTP = async (req, res, next) => {
       message: result.delivered
         ? 'Verification code sent to your phone'
         : 'SMS is not configured, so no text was sent. The code was logged on the server (development only).',
+      clientSend: false,
       smsSent: !!result.delivered,
       smsConfigured: isSmsConfigured(),
+      smsProvider: result.delivered ? 'twilio' : 'none',
     });
   } catch (err) { next(err); }
 };
 
-/** Authenticated: verifies the SMS code and marks the phone number verified. */
+/**
+ * Authenticated: marks the phone number verified.
+ *
+ * Accepts either a Firebase `idToken` (the code was checked by the client SDK
+ * against Google) or the legacy Twilio `otp` (a code this server generated and
+ * texted). Firebase is tried first when the token is present.
+ */
 export const verifyPhoneOTP = async (req, res, next) => {
   try {
-    const { otp } = req.body;
-    if (!otp) throw new AppError(400, 'Verification code is required');
+    const { otp, idToken } = req.body || {};
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user) throw new AppError(404, 'User not found');
+
+    if (idToken) {
+      const result = await verifyFirebaseIdToken(idToken);
+      if (!result.ok) {
+        console.warn(`[PHONE OTP] Firebase token rejected: ${result.reason}`);
+        throw new AppError(400, 'Phone verification failed. Please request a new code.');
+      }
+      const phone = normalizePhone(result.phoneNumber);
+      if (!isValidPhone(phone)) throw new AppError(400, 'Firebase returned an invalid phone number');
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { phone, phoneVerified: true, phoneOtp: null, phoneOtpExpiry: null, phoneOtpAttempts: 0 },
+      });
+      return res.json({ message: 'Phone number verified successfully', phoneVerified: true, phone, provider: 'firebase' });
+    }
+
+    if (!otp) throw new AppError(400, 'Verification code is required');
     if (!user?.phoneOtp) throw new AppError(400, 'No verification code was requested');
     if ((user.phoneOtpAttempts || 0) >= MAX_OTP_ATTEMPTS) throw new AppError(429, 'Too many incorrect attempts. Request a new code.');
 
@@ -310,7 +367,7 @@ export const verifyPhoneOTP = async (req, res, next) => {
       where: { id: user.id },
       data: { phoneVerified: true, phoneOtp: null, phoneOtpExpiry: null, phoneOtpAttempts: 0 },
     });
-    res.json({ message: 'Phone number verified successfully', phoneVerified: true });
+    res.json({ message: 'Phone number verified successfully', phoneVerified: true, phone: user.phone, provider: 'twilio' });
   } catch (err) { next(err); }
 };
 

@@ -1,7 +1,12 @@
 import { maskPhone } from '../utils/otp.js';
+import { isFirebaseConfigured } from './firebase.js';
 
 /**
  * Provider-agnostic SMS delivery.
+ *
+ * Firebase Phone Auth is preferred when configured: it is free on the Spark
+ * plan and the client SDK sends the SMS, so this module is not involved. Twilio
+ * remains as a fallback for deployments that have not set up Firebase.
  *
  * Twilio is used over its REST API with fetch() so no SDK dependency is needed.
  * When the credentials are absent the message is logged and reported as
@@ -94,17 +99,22 @@ export function sendPhoneOtp(phone, otp, firstName) {
 }
 
 /**
- * Boot-time report, mirroring reportPaymentConfig(). SMS is optional - the store
- * works without it - but phone verification depends on it, so state is logged.
+ * Boot-time report, mirroring reportPaymentConfig(). Phone verification is
+ * optional - the store works without it - but it is a login-adjacent feature,
+ * so the active provider is logged.
  */
 export function reportSmsConfig() {
+  if (isFirebaseConfigured()) {
+    console.log('[SMS] Phone verification uses Firebase Phone Auth (free tier). Twilio is not used.');
+    return { configured: true, provider: 'firebase', missing: [] };
+  }
   const { configured, missing, provider } = getSmsConfig();
   if (configured) {
     console.log(`[SMS] ${provider} configured - phone OTP delivery is active.`);
-    return { configured: true, missing: [] };
+    return { configured: true, provider, missing: [] };
   }
-  console.warn(`[SMS] Phone OTP is NOT configured. Missing or placeholder: ${missing.join(', ')}.
-[SMS] Codes are still generated and logged in development, but no real text message is sent.
+  console.warn(`[SMS] Phone verification is NOT configured. Missing or placeholder: ${missing.join(', ')}.
+[SMS] Set FIREBASE_API_KEY + FIREBASE_PROJECT_ID (preferred and free) or the TWILIO_* variables.
 [SMS] See EMAIL_OTP_SETUP.md.`);
-  return { configured: false, missing };
+  return { configured: false, provider: 'none', missing };
 }

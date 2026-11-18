@@ -14,7 +14,7 @@ import {
   verifyCallbackChecksum,
   verifyWebhookSignature,
 } from '../utils/paytm.js';
-import { sendOrderConfirmationEmail, sendRefundEmail } from '../services/email.js';
+import { sendOrderConfirmationEmail, sendRefundEmail, sendOrderShopNotification } from '../services/email.js';
 import { fulfillStock, releaseStock } from '../services/inventory.js';
 
 /** Paytm allows alphanumerics plus @ - _ . in an order id, max 50 characters. */
@@ -179,18 +179,27 @@ const markPaymentCompleted = async (order, result, source) => {
   });
 
   // The confirmation email is sent once, when money is actually recorded
-  // (previously it went out at order creation, before payment).
+  // (previously it went out at order creation, before payment). The shop gets
+  // its own copy so the owner is told about every paid order too.
   if (justPaid) {
     prisma.order
       .findUnique({
         where: { id: order.id },
-        include: { items: true, user: { select: { email: true, firstName: true } } },
+        include: {
+          items: true,
+          addresses: true,
+          user: { select: { email: true, firstName: true, lastName: true } },
+        },
       })
       .then((fresh) => {
-        if (!fresh?.user?.email) return null;
-        return sendOrderConfirmationEmail(fresh.user.email, fresh.user.firstName, fresh);
+        if (!fresh) return null;
+        const sends = [sendOrderShopNotification(fresh)];
+        if (fresh.user?.email) {
+          sends.push(sendOrderConfirmationEmail(fresh.user.email, fresh.user.firstName, fresh));
+        }
+        return Promise.all(sends);
       })
-      .catch((err) => console.error('[EMAIL] order confirmation failed:', err.message));
+      .catch((err) => console.error('[EMAIL] order notification failed:', err.message));
   }
 
   return updatedOrder;

@@ -4,7 +4,7 @@ import { generateOTP, hashOtp, matchesOtp, otpExpiry, isExpired, MAX_OTP_ATTEMPT
 import { AppError } from '../middleware/errorHandler.js';
 import { sendForgotPasswordOTP, sendVerificationOTP, sendWelcomeEmail, isEmailConfigured } from '../services/email.js';
 import { sendPhoneOtp, isSmsConfigured } from '../services/sms.js';
-import { isFirebaseConfigured, verifyFirebaseIdToken } from '../services/firebase.js';
+import { verifyFirebaseIdToken, getPublicFirebaseConfig } from '../services/firebase.js';
 import { verifyGoogleAccessToken, verifyAppleIdentityToken } from '../utils/oauth.js';
 import { z } from 'zod';
 
@@ -49,16 +49,25 @@ const lower = (email) => String(email || '').trim().toLowerCase();
  */
 /**
  * Describes the active phone-verification channel. With Firebase the SMS is
- * sent by the client SDK, so `clientSend` tells the web app to use it.
+ * sent by the client SDK, so `clientSend` tells the web app to use it, and the
+ * public Firebase config is included so the browser does not need its own copy
+ * of the values (all of them are public by design).
  */
 const smsChannelConfig = () => {
-  if (isFirebaseConfigured()) {
-    return { channel: 'sms', provider: 'firebase', configured: true, clientSend: true };
+  const firebase = getPublicFirebaseConfig();
+  if (firebase.configured && firebase.clientReady) {
+    return { channel: 'sms', provider: 'firebase', configured: true, clientSend: true, firebase };
   }
   if (isSmsConfigured()) {
     return { channel: 'sms', provider: 'twilio', configured: true, clientSend: false };
   }
-  return { channel: 'sms', provider: 'none', configured: false, clientSend: false };
+  return {
+    channel: 'sms',
+    provider: 'none',
+    configured: false,
+    clientSend: false,
+    ...(firebase.configured ? { firebase } : {}),
+  };
 };
 
 export const getVerificationConfig = (_req, res) => {
@@ -285,7 +294,7 @@ export const requestPhoneOTP = async (req, res, next) => {
 
     // With Firebase the SMS is sent by the browser SDK, not by this server.
     // Record the number so verification can mark the account.
-    if (isFirebaseConfigured()) {
+    if (getPublicFirebaseConfig().clientReady) {
       await prisma.user.update({
         where: { id: user.id },
         data: { phone, phoneVerified: false },

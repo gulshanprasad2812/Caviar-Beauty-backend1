@@ -153,3 +153,42 @@ export function refundTemplate(order, refund, firstName) {
   <div class="footer"><p>Caviar Beauty — Luxury Redefined</p></div>
 </div></body></html>`;
 }
+
+/**
+ * Contact-form submissions are written by anonymous visitors, so every value
+ * is escaped before it reaches the HTML body. The message keeps its line
+ * breaks so the notification reads like the visitor wrote it.
+ */
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[char]));
+
+export function contactNotificationTemplate(contact) {
+  const when = contact?.createdAt ? new Date(contact.createdAt).toLocaleString('en-IN') : new Date().toLocaleString('en-IN');
+  const body = escapeHtml(contact?.message).replace(/\r?\n/g, '<br/>');
+  return `<!DOCTYPE html><html><head>${baseStyle}</head><body>
+<div class="container">
+  <div class="header"><h1>Caviar Beauty</h1></div>
+  <div class="body">
+    <h2>New contact message</h2>
+    <p><strong>${escapeHtml(contact?.subject)}</strong></p>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+      <tr>
+        <td style="padding:8px 8px;font-size:13px;color:#666;width:90px;">From</td>
+        <td style="padding:8px 8px;font-size:13px;color:#333;">${escapeHtml(contact?.name)}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 8px;font-size:13px;color:#666;">Email</td>
+        <td style="padding:8px 8px;font-size:13px;color:#333;">${escapeHtml(contact?.email)}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 8px;font-size:13px;color:#666;">Received</td>
+        <td style="padding:8px 8px;font-size:13px;color:#333;">${escapeHtml(when)}</td>
+      </tr>
+    </table>
+    <div style="background:#f5f5f0;border:1px solid #e0e0e0;padding:20px;font-size:14px;line-height:1.7;color:#333;">${body}</div>
+    <p style="font-size:12px;color:#999;margin-top:20px;">Reply to this email to answer ${escapeHtml(contact?.email)} directly.</p>
+  </div>
+  <div class="footer"><p>Caviar Beauty — Luxury Redefined</p></div>
+</div></body></html>`;
+}

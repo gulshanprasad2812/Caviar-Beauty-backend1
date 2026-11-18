@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer';
-import { forgotPasswordTemplate, verifyEmailTemplate, welcomeTemplate, orderConfirmationTemplate, orderShippedTemplate, orderDeliveredTemplate, refundTemplate } from '../templates/email.js';
+import { forgotPasswordTemplate, verifyEmailTemplate, welcomeTemplate, orderConfirmationTemplate, orderShippedTemplate, orderDeliveredTemplate, refundTemplate, contactNotificationTemplate } from '../templates/email.js';
 import { maskEmail } from '../utils/otp.js';
 
 let transporter = null;
@@ -138,14 +138,44 @@ export function sendRefundEmail(email, firstName, order, refund) {
 }
 
 /**
+ * Contact-form notification for the store owner. Unlike the customer emails
+ * above there is no visitor account involved: the recipient is the shop's own
+ * inbox (CONTACT_TO, falling back to MAIL_FROM / SMTP_USER) and Reply-To points
+ * at the visitor so a reply in the mail client answers them directly.
+ */
+export function contactNotificationRecipient() {
+  const config = getEmailConfig();
+  return (process.env.CONTACT_TO || '').trim() || config.from || config.user || '';
+}
+
+export function sendContactNotification(contact) {
+  const to = contactNotificationRecipient();
+  if (!to) {
+    console.warn('[EMAIL] No contact recipient configured (set CONTACT_TO); the contact form message was only stored.');
+    return Promise.resolve({ delivered: false, mocked: true, provider: 'none', reason: 'no-recipient' });
+  }
+  return sendMail({
+    from: fromAddress(),
+    to,
+    replyTo: contact?.email || undefined,
+    subject: `Contact form: ${contact?.subject || 'New message'}`,
+    html: contactNotificationTemplate(contact),
+  });
+}
+
+/**
  * Boot-time report, mirroring reportPaymentConfig(). Email is optional for the
  * API to start, but registration, email verification and password reset all
  * depend on it, so the state is logged loudly.
  */
 export function reportEmailConfig() {
   const { configured, missing, host, port } = getEmailConfig();
+  const contactTo = contactNotificationRecipient();
   if (configured) {
     console.log(`[EMAIL] SMTP configured (${host}:${port}) - verification and reset emails will be delivered.`);
+    console.log(contactTo
+      ? `[EMAIL] Contact-form submissions are sent to ${maskEmail(contactTo)}.`
+      : '[EMAIL] Set CONTACT_TO so contact-form submissions are emailed to the shop inbox.');
     return { configured: true, missing: [] };
   }
   console.warn(`[EMAIL] Email delivery is NOT configured. Missing or placeholder: ${missing.join(', ')}.

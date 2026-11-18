@@ -1,4 +1,25 @@
 import { prisma } from '../db.js';
+import { AppError } from '../middleware/errorHandler.js';
+
+// Slugs follow the product name, so renaming a product in the admin panel
+// updates its public URL instead of leaving the original one behind.
+const slugify = (value) => String(value || '')
+  .normalize('NFKD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '')
+  .slice(0, 120);
+
+const ensureUniqueSlug = async (base, excludeId) => {
+  const root = base || 'product';
+  for (let n = 1; n <= 100; n += 1) {
+    const candidate = n === 1 ? root : `${root}-${n}`;
+    const clash = await prisma.product.findUnique({ where: { slug: candidate }, select: { id: true } });
+    if (!clash || clash.id === excludeId) return candidate;
+  }
+  return `${root}-${Date.now().toString(36)}`;
+};
 
 export const getProducts = async (req, res, next) => {
   try {
@@ -138,9 +159,12 @@ export const getAllProductsAdmin = async (_req, res, next) => {
 export const createProduct = async (req, res, next) => {
   try {
     const { name, slug, description, brandId, categoryId, basePrice, discountPrice, currency, material, specifications, isFeatured, isNewArrival, isBestSeller, isLimited, metaTitle, metaDesc, images, variants, tagIds, collectionIds } = req.body;
+    const baseSlug = slugify(slug || name);
+    if (!baseSlug) throw new AppError(400, 'A product name is required to generate a slug');
+    const uniqueSlug = await ensureUniqueSlug(baseSlug);
     const product = await prisma.product.create({
       data: {
-        name, slug, description, brandId, categoryId, basePrice: parseFloat(basePrice), discountPrice: discountPrice ? parseFloat(discountPrice) : null, currency: currency || 'INR', material, specifications, sku: `CB-${slug.toUpperCase().replace(/-/g, '')}`,
+        name, slug: uniqueSlug, description, brandId, categoryId, basePrice: parseFloat(basePrice), discountPrice: discountPrice ? parseFloat(discountPrice) : null, currency: currency || 'INR', material, specifications, sku: `CB-${uniqueSlug.toUpperCase().replace(/-/g, '')}`,
         isFeatured: isFeatured || false, isNewArrival: isNewArrival || false, isBestSeller: isBestSeller || false, isLimited: isLimited || false, metaTitle, metaDesc,
         images: { create: images?.map((img, i) => ({ url: img.url, alt: img.alt || name, isPrimary: i === 0, sortOrder: i })) || [] },
         variants: { create: variants?.map(v => ({ color: v.color, size: v.size, stock: parseInt(v.stock) || 0, sku: v.sku || `${slug}-${v.color?.toLowerCase().replace(/\s+/g, '-')}-${v.size?.toLowerCase().replace(/\s+/g, '-') || 'os'}`, price: v.price ? parseFloat(v.price) : null })) || [] },
@@ -158,11 +182,23 @@ export const updateProduct = async (req, res, next) => {
   try {
     const { name, slug, description, brandId, categoryId, basePrice, discountPrice, currency, material, specifications, isFeatured, isNewArrival, isBestSeller, isLimited, metaTitle, metaDesc, isActive, images, variants, tagIds, collectionIds } = req.body;
 
+    const current = await prisma.product.findUnique({ where: { id: req.params.id } });
+    if (!current) throw new AppError(404, 'Product not found');
+
+    // A slug is regenerated from the name only when the request does not carry
+    // one; the admin form tracks name changes and sends the derived slug, so a
+    // manually customised slug is never overwritten here.
+    const requestedSlug = slug === undefined ? '' : slugify(slug);
+    const nextSlug = await ensureUniqueSlug(
+      slugify(requestedSlug || name || current.name),
+      current.id,
+    );
+
     const product = await prisma.$transaction(async (tx) => {
       const updated = await tx.product.update({
         where: { id: req.params.id },
         data: {
-          name, slug, description, brandId, categoryId, basePrice: basePrice !== undefined ? parseFloat(basePrice) : undefined, discountPrice: discountPrice !== undefined ? (discountPrice ? parseFloat(discountPrice) : null) : undefined, currency: currency || undefined, material, specifications,
+          name, slug: nextSlug, description, brandId, categoryId, basePrice: basePrice !== undefined ? parseFloat(basePrice) : undefined, discountPrice: discountPrice !== undefined ? (discountPrice ? parseFloat(discountPrice) : null) : undefined, currency: currency || undefined, material, specifications,
           isFeatured, isNewArrival, isBestSeller, isLimited, metaTitle, metaDesc, isActive,
         },
         include: { brand: true, category: true },

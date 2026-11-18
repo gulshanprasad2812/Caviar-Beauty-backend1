@@ -185,12 +185,13 @@ export const updateProduct = async (req, res, next) => {
     const current = await prisma.product.findUnique({ where: { id: req.params.id } });
     if (!current) throw new AppError(404, 'Product not found');
 
-    // A slug is regenerated from the name only when the request does not carry
-    // one; the admin form tracks name changes and sends the derived slug, so a
-    // manually customised slug is never overwritten here.
+    // An explicit slug always wins. If the request changes the name without
+    // sending a slug, derive one from the new name; requests that touch neither
+    // (for example an isActive toggle) keep the current URL.
     const requestedSlug = slug === undefined ? '' : slugify(slug);
+    const derivedFromName = typeof name === 'string' && name.trim() ? slugify(name) : '';
     const nextSlug = await ensureUniqueSlug(
-      slugify(requestedSlug || name || current.name),
+      requestedSlug || derivedFromName || current.slug,
       current.id,
     );
 
